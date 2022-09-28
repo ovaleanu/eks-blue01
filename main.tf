@@ -40,7 +40,7 @@ module "eks_blueprints" {
   tags = local.tags
 }
 
-module "eks_blueprints_kubernetes_addons" {
+module "aws_controllers" {
   source = "github.com/aws-ia/terraform-aws-eks-blueprints/modules/kubernetes-addons"
 
   eks_cluster_id       = module.eks_blueprints.eks_cluster_id
@@ -48,12 +48,19 @@ module "eks_blueprints_kubernetes_addons" {
   eks_oidc_provider    = module.eks_blueprints.oidc_provider
   eks_cluster_version  = module.eks_blueprints.eks_cluster_version
 
-  # EKS Managed Add-ons
-  enable_amazon_eks_vpc_cni    = true
-  enable_amazon_eks_coredns    = true
-  enable_amazon_eks_kube_proxy = true
-  enable_karpenter             = true
-  enable_tetrate_istio         = false
+  #---------------------------------------------------------------
+  # Use AWS controllers separately
+  # So that it can delete ressources it created from other addons or workloads
+  #---------------------------------------------------------------
+
+  enable_aws_load_balancer_controller = true
+  enable_karpenter                    = true
+}
+
+module "eks_blueprints_kubernetes_addons" {
+  source = "github.com/aws-ia/terraform-aws-eks-blueprints/modules/kubernetes-addons"
+
+  eks_cluster_id = module.eks_blueprints.eks_cluster_id
 
   enable_argocd = true
   # This example shows how to set default ArgoCD Admin Password using SecretsManager with Helm Chart set_sensitive values.
@@ -64,10 +71,11 @@ module "eks_blueprints_kubernetes_addons" {
   argocd_manage_add_ons = true # Indicates that ArgoCD is responsible for managing/deploying add-ons
   argocd_applications = {
     addons    = local.addon_application
+    workloads = local.workload_application
   }
 
   # Add-ons
-  enable_amazon_eks_aws_ebs_csi_driver = true
+  enable_amazon_eks_aws_ebs_csi_driver = false
   enable_aws_for_fluentbit             = false
   enable_cert_manager                  = false
   enable_cluster_autoscaler            = false
@@ -78,7 +86,6 @@ module "eks_blueprints_kubernetes_addons" {
   enable_vpa                           = false
   enable_yunikorn                      = false
   enable_argo_rollouts                 = true
-  enable_aws_load_balancer_controller  = true
 
   tags = local.tags
 }
@@ -97,21 +104,29 @@ resource "kubernetes_namespace" "istio_system" {
 }
 
 resource "helm_release" "istio-base" {
-  repository       = local.istio_charts_url
-  chart            = "base"
-  name             = "istio-base"
-  namespace        = kubernetes_namespace.istio_system.metadata.0.name
-  version          = "1.15.0"
+  repository = local.istio_charts_url
+  chart      = "base"
+  name       = "istio-base"
+  namespace  = kubernetes_namespace.istio_system.metadata.0.name
+  version    = local.istio_version
+}
+
+resource "helm_release" "istio-cni" {
+  repository = local.istio_charts_url
+  chart      = "cni"
+  name       = "istio-cni"
+  namespace  = "kube-system"
+  version    = local.istio_version
+  depends_on = [helm_release.istio-base]
 }
 
 resource "helm_release" "istiod" {
-  repository       = local.istio_charts_url
-  chart            = "istiod"
-  name             = "istiod"
-  namespace        = kubernetes_namespace.istio_system.metadata.0.name
-  create_namespace = true
-  version          = "1.15.0"
-  depends_on       = [helm_release.istio-base]
+  repository = local.istio_charts_url
+  chart      = "istiod"
+  name       = "istiod"
+  namespace  = kubernetes_namespace.istio_system.metadata.0.name
+  version    = local.istio_version
+  depends_on = [helm_release.istio-cni]
 }
 
 resource "kubernetes_namespace" "istio_ingress" {
@@ -128,7 +143,7 @@ resource "helm_release" "istio-ingress" {
   chart      = "gateway"
   name       = "istio-ingress"
   namespace  = kubernetes_namespace.istio_ingress.metadata.0.name
-  version    = "1.15.0"
+  version    = local.istio_version
   depends_on = [helm_release.istiod]
 }
 
